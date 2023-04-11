@@ -89,16 +89,22 @@ def build_sequence(target, target_df):
     # Call a sequence of functions to extract wanted data from html
     
     # Get coordinates and add to df
-    lats, longs = be.get_latLong(target)
-    target_df['latitude'] = lats
-    target_df['longitude'] = longs
+    lats, longs, ignore = be.get_latLong(target)
+    target_df['latitude'] = [value for idx, value in enumerate(lats) if idx not in ignore]
+    target_df['longitude'] = [value for idx, value in enumerate(longs) if idx not in ignore]
+    print(len(lats), len(longs))
+    
+    print(target_df)
     
     # Get prices
     prices = be.get_Price(target)
+    #prices = [value for idx, value in enumerate(prices) if idx not in ignore]
+    print(len(prices))
     target_df['price'] = prices
     
     # Get areas
     areas = be.get_Area(target)
+    areas = [value for idx, value in enumerate(areas) if idx not in ignore]
     target_df['area'] = areas   
     
     # Add price/area column

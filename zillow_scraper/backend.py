@@ -14,6 +14,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError
 import requests
 import lxml
 from lxml.html.soupparser import fromstring
@@ -38,6 +39,21 @@ def get_url(target):
     
     
 def get_html(urls, target):
+    # Inner function to get data given formatted urls:
+    def download_html(urls, target):
+        with requests.Session() as s:
+            sale = s.get(urls[0], headers=req_headers)
+            sold = s.get(urls[1], headers=req_headers)
+        
+        soup_sale = BeautifulSoup(sale.content, 'html.parser')
+        soup_sold = BeautifulSoup(sold.content, 'html.parser')
+            
+        with open(f".\\{target}\\{target}.txt", "a") as target_data:
+            print(soup_sale.encode('utf-8'), file=target_data)
+        
+        with open(f".\\{target}\\{target}_sold.txt", "a") as target_data:
+            print(soup_sold.encode('utf-8'), file=target_data)
+        
     # Download html, save to txt file
     req_headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -47,20 +63,59 @@ def get_html(urls, target):
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36'
     }
     
-    with requests.Session() as s:
-        sale = s.get(urls[0], headers=req_headers)
-        sold = s.get(urls[1], headers=req_headers)
-        
-    soup_sale = BeautifulSoup(sale.content, 'html.parser')
-    soup_sold = BeautifulSoup(sold.content, 'html.parser')
-        
-    with open(f".\\{target}\\{target}.txt", "w") as target_data:
-        print(soup_sale.encode('utf-8'), file=target_data)
+    # Format urls for page number
+    sale_url = urls[0]
+    sold_url = urls[1]
     
-    with open(f".\\{target}\\{target}_sold.txt", "w") as target_data:
-        print(soup_sold.encode('utf-8'), file=target_data)
+    sale_first = sale_url[:sale_url.find("currentPage")+17]
+    sale_last = sale_url[sale_url.find("%7D", sale_url.find("currentPage")+17):]
+    
+    sold_first = sale_url[:sold_url.find("currentPage")+17]
+    sold_last = sale_url[sold_url.find("%7D", sold_url.find("currentPage")+17):]
+    
+    for i in range(1,21):
+        sale_url = sale_first + str(i) + sale_last
+        sold_url = sold_first + str(i) + sold_last
+        urls = [sale_url, sold_url]
         
+        print(f'Collecting page {i} data', end='\r' if i != 20 else '\n')
         
+        if i == 0:
+            with requests.Session() as s:
+                sale = s.get(urls[0], headers=req_headers)
+                sold = s.get(urls[1], headers=req_headers)
+                
+            soup_sale = BeautifulSoup(sale.content, 'html.parser')
+            soup_sold = BeautifulSoup(sold.content, 'html.parser')
+                
+            with open(f".\\{target}\\{target}.txt", "w") as target_data:
+                print(soup_sale.encode('utf-8'), file=target_data)
+            
+            with open(f".\\{target}\\{target}_sold.txt", "w") as target_data:
+                print(soup_sold.encode('utf-8'), file=target_data)
+        
+        else:
+            download_html(urls, target)
+            
+def get_listings(target_file, start_string, end_string):
+    # Return chunks of html file that contain all needed information for each listing
+    myfile = open(f'.\\{target_file.split("_")[0]}\\{target_file}.txt')
+    contents = myfile.read()
+    myfile.close()
+    
+    locs = []
+    begInd = 0
+    while contents.find(start_string, begInd) >= 0:
+        begInd = contents.find(start_string, begInd) + 1
+        endInd = contents.find(end_string, begInd)
+        locs.append((begInd - 1, endInd))
+        
+    lines = []
+    for b,e in locs:
+        lines.append(contents[b:e])
+        
+    return(lines)
+            
 def get_lines(target_file, coarse_string, fine_string, end_string, offset):
     myfile = open(f'.\\{target_file.split("_")[0]}\\{target_file}.txt')
     contents = myfile.read()
@@ -87,12 +142,16 @@ def get_lines(target_file, coarse_string, fine_string, end_string, offset):
 def get_latLong(target):
     
     lats = get_lines(target, 'latLong', 'latitude', ',', 10)
-    lats = [float(i) for i in lats]
-    
+    ignore = [idx for idx, value in enumerate(lats) if value == '{}']
+    print(ignore)
+        
     longs = get_lines(target, 'latLong', 'longitude', '}', 11)
-    longs = [float(i) for i in longs]
+    print([longs[i] for i in ignore])
     
-    return([lats,longs])
+    lats = [float(i) for i in lats if i != '{}']
+    longs = [float(i) for i in longs if i != '']
+    
+    return([lats,longs,ignore])
     
 def get_Price(target):
     
@@ -116,6 +175,8 @@ def write_data(target, df, sale=True):
         old_data = pd.read_csv(filename)
     except FileNotFoundError:
         old_data = pd.DataFrame()
+    except EmptyDataError:
+        old_data = pd.DataFrame()
         
     # Add new data, overwriting any matching lat/long combination
     data = pd.concat([old_data, df], ignore_index=True)
@@ -136,17 +197,27 @@ def build_data(target, key, sale=True):
     # Find limits for lat/long
     step = 0.01
     
-    max_lat = max(df['latitude'])
-    max_lat = math.ceil(max_lat / 0.01) * 0.01
+    url = get_url(target)[0]
     
-    min_lat = min(df['latitude'])
-    min_lat = math.floor(min_lat / 0.01) * 0.01
+    max_lat = url.find('north')+11  # 'north' has some symbolic characters after it ('%22%3A')
+    max_lat = url[max_lat: max_lat + 9] # get enough characters to have at least 0.01 digit from lat/long
+    max_lat = float(max_lat)
+    max_lat = math.ceil(max_lat / step) * step
     
-    max_long = max(df['longitude'])
-    max_long = math.ceil(max_long / 0.01) * 0.01
+    min_lat = url.find('south')+11
+    min_lat = url[min_lat: min_lat + 9]
+    min_lat = float(min_lat)
+    min_lat = math.ceil(min_lat / step) * step
     
-    min_long = min(df['longitude'])
-    min_long = math.floor(min_long / 0.01) * 0.01
+    max_long = url.find('east')+10
+    max_long = url[max_long: max_long + 9]
+    max_long = float(max_long)
+    max_long = math.ceil(max_long / step) * step
+    
+    min_long = url.find('west')+10
+    min_long = url[min_long: min_long + 9]
+    min_long = float(min_long)
+    min_long = math.ceil(min_long / step) * step
     
     min_lat = round(min_lat, 2)
     max_lat = round(max_lat, 2)
@@ -164,25 +235,32 @@ def build_data(target, key, sale=True):
     longRange = np.linspace(min_long, max_long, num=n_long_bins+1)
     longRange = [round(i,2) for i in longRange]
     
+    # Create base data dataframe, start with zeros of proper size, then change everything to a list
     init_data = np.zeros((len(latRange),len(longRange)))
     graph_data = pd.DataFrame(data=init_data, index=latRange, columns=longRange)
-      
+    
+    # Create second dataframe containing the number of entries in each latbin/longbin combo
+    # used for finding average value in each block
+    # is initially the same as graph_data, but in incremented rather than set to a value
+    counter = pd.DataFrame(data=init_data, index=latRange, columns=longRange)
     
     # Sort data and insert into graph_data
     to_bin = lambda x: np.floor(x / step) * step
     df["latBin"] = round(to_bin(df['latitude']), 2)
     df["longBin"] = round(to_bin(df['longitude']), 2)
     groups = df.groupby(["latBin", "longBin"])
-    
+       
     for i in df.index:
         x = df.at[i, 'latBin']
         y = df.at[i, 'longBin']
         z = df.at[i, 'price']
-        graph_data.at[x, y] = z
+        # increment counter at [x,y]
+        counter.at[x,y] += 1
+        # set graph_data to (current value + z) / counter[x,y] to get average
+        value = (graph_data.at[x,y] + z) / counter.at[x,y]
+        graph_data.at[x, y] = value
         
-    print(df)
     return(graph_data)
-    # Need to average values for repeat latbin/longbin
     
 def graph_data(target):
     # Plot data in subplots
@@ -220,4 +298,9 @@ if __name__ == '__main__':
     '''
     
     # Test get_latLong
-    print(get_latLong('Denver'))
+    # print(get_latLong('Denver'))
+    
+    # Test getting listings
+    listings = get_listings('Denver', 'latLong', 'homeType')
+    for i in listings:
+        print(i)
